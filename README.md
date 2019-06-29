@@ -2,8 +2,8 @@
 
 *	You will undertake a project that will determine your final mark of the course by 50 per cent. The project will require you to analyse one or more real world datasets of your choice. You can use the [UCI repository](https://archive.ics.uci.edu/ml/index.php) or any other accessible dataset. 
 
-*	The project will consist of two tasks than can be chosen from the following 
- 1.	Regression: where the problem consists of continuous target variable(s). 
+*	The project will consist of **two tasks** than can be chosen from the following 
+ 1. Regression: where the problem consists of continuous target variable(s). 
  2.	Classification: where problem consists of categorical target variable(s). 
  3.	Unsupervised Learning, i.e. Factor/Cluster Analysis: where the problem consists of identifying homogeneous population groups or variables.
 
