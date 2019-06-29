@@ -4,8 +4,8 @@
 
 *	The project will consist of **two tasks** than can be chosen from the following 
     1. Regression: where the problem consists of continuous target variable(s). 
-    2.	Classification: where problem consists of categorical target variable(s). 
-    3.	Unsupervised Learning, i.e. Factor/Cluster Analysis: where the problem consists of identifying homogeneous population groups or variables.
+    2. Classification: where problem consists of categorical target variable(s). 
+    3. Unsupervised Learning, i.e. Factor/Cluster Analysis: where the problem consists of identifying homogeneous population groups or variables.
 
 *	The tasks may be applied on a single dataset or two different ones.
 
