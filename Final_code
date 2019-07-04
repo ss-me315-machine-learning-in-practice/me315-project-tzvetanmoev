@@ -1,0 +1,1075 @@
+---
+title: "FULL CODE"
+output: word_document
+
+---
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r script, eval = FALSE, echo = TRUE}
+#########################################################################
+###  COURSEWORK     #####################################################
+#########################################################################
+
+####### 1. LOADING THE DATA   ###########################################
+setwd("~/Coursework")
+
+
+######  1.1. Packages          ##########################################
+# install.packages("mice")
+# install.packages("class")
+# install.packages("modeest")
+# install.packages("gbm")
+require(mice)
+require(dplyr)
+require(MASS)
+require(ISLR)
+require(tree)
+require(rpart)
+require(class)
+require(randomForest)
+require(modeest)
+require(gbm)
+
+#####  1.2. Clean the dataset
+long_L01 <- readRDS("long_L01_imputed.RDs")
+long_L01$log_earnings <- log(long_L01$total_earnings)
+long_L01[, c(9:35)] <- long_L01[, c(9:35)] /100
+names(long_L01)[names(long_L01) == '.imp'] <- "imp"
+long_L01 <-   long_L01 %>% 
+  group_by(imp) %>%
+  mutate(INC_RANK = percent_rank(total_earnings))
+names(long_L01)[names(long_L01) == 'imp'] <- ".imp"
+
+L01_imp <- as.mids(long_L01)
+
+L01_an <- complete(L01_imp, 1)
+L01_an <- L01_an[sample(1:nrow(L01_an)), ]
+# remove predictors
+L01_an <- L01_an[,c(1:6, 34, 35)]
+# create ID variable
+L01_an$id <- c(1:nrow(L01_an))
+# recode NSSEC variable
+L01_an$NSSEC_old <- L01_an$NSSEC_RES
+L01_an$NSSEC_RES <- as.numeric(L01_an$NSSEC_RES)
+L01_an$NSSEC_new <- ifelse(L01_an$NSSEC_RES==1 | L01_an$NSSEC_RES==2 | L01_an$NSSEC_RES==3, 1, 0)
+L01_an$NSSEC_new <- ifelse(L01_an$NSSEC_RES==9, 4, L01_an$NSSEC_new)
+L01_an$NSSEC_new <- ifelse(L01_an$NSSEC_RES==5 | L01_an$NSSEC_RES==4, 2, L01_an$NSSEC_new)
+L01_an$NSSEC_new <- ifelse(L01_an$NSSEC_new==0, 3, L01_an$NSSEC_new)
+L01_an$NSSEC_RES <- as.factor(L01_an$NSSEC_new )
+table(L01_an$NSSEC_RES)
+
+table(L01_an$NSSEC_RES, L01_an$NSSEC_old)
+
+# Recode into four categories to improve prediction
+
+#### 1.3. Create training and testing dataset
+smp_size <- floor(0.75 * nrow(L01_an))
+## set the seed to make your partition reproducible
+set.seed(1)
+training_df <- sample(seq_len(nrow(L01_an)), size = smp_size)
+
+train_L01 <- L01_an[training_df, ]
+train_L01 <- train_L01[ order(train_L01$id) ,]
+test_L01 <- L01_an[-training_df, ]
+test_L01 <- test_L01[ order(test_L01$id) ,]
+
+saveRDS(train_L01, "train_L01.RDs")
+saveRDS(test_L01, "test_L01.RDs")
+
+train_L01 <- readRDS("train_L01.RDs")
+test_L01 <- readRDS("test_L01.RDs")
+
+##############################################################################################
+
+
+
+
+
+
+
+
+
+####  2. CLASSIFICATION: NSSEC    ###########################################################
+
+##### 2.1. Heterogenous Ensembling  #########################################################
+##### 2.1.0. Dataset for storing predictions
+train_L01 <- train_L01[ order(train_L01$id) ,]
+het_train <- as.data.frame(matrix(ncol = 9, nrow = nrow(train_L01)) )
+colnames(het_train) <- c("id", "actual", "ols", "logit", "probit", "cauchy", "lin_dis", 
+                         "qua_dis" , "tree") 
+perf_measure_train <- as.data.frame(matrix(ncol = 6, nrow = 10 ) )
+colnames(perf_measure_train) <- c("model", "accuracy", "NSSEC-1", "NSSEC-2", "NSSEC-3", "NSSEC-4")
+perf_measure_train$model <- c("ols", "logit", "probit", "cauchy", "lin_dis", 
+                              "qua_dis" , "tree", "avg", "st_reg", "st_log")
+het_train$id <- train_L01$id
+het_train$actual <- train_L01$NSSEC_RES
+rm(L01_imp)
+
+##### 2.1.1. OLS model  #####################################################################
+train_L01 <- train_L01[ order(train_L01$id) ,]
+train_L01$num_NSSEC <- as.numeric(train_L01$NSSEC_RES)
+het_ols <- lm(num_NSSEC ~ ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn, data = train_L01)
+het_train$ols <- as.factor(round(het_ols$fitted.values, 0 ))
+het_train$ols <- ifelse(het_train$ols==5, 4, het_train$ols)
+het_train$ols <- as.factor(het_train$ols)
+
+##### 2.1.2. Ordered Logit Model
+train_L01 <- train_L01[ order(train_L01$id) ,]
+het_log <- polr(NSSEC_RES ~ ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn, data=train_L01, Hess=TRUE)
+het_train$logit <- as.factor( substr( 
+  colnames(data.frame(het_log$fitted))[max.col(data.frame(het_log$fitted),
+                                               ties.method="first")], 2, 3 ) )
+table(predict(het_log, type = "class"))
+
+#############################
+# NO MISTAKE UP TO HERE
+
+
+##### 2.1.3. Ordered Probit Model
+train_L01 <- train_L01[ order(train_L01$id) ,]
+het_prob <- polr(NSSEC_RES ~ ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn, 
+                 data=train_L01, Hess=TRUE, method = "probit")
+het_train$probit <- as.factor( substr( 
+  colnames(data.frame(het_prob$fitted))[max.col(data.frame(het_prob$fitted),
+                                                ties.method="first")], 2, 3 ) )
+
+
+##### 2.1.4. Ordered Cauchy Model
+train_L01 <- train_L01[ order(train_L01$id) ,]
+het_cauchy <- polr(NSSEC_RES ~ ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn, 
+                   data=train_L01, Hess=TRUE, method = "cauchit")
+het_train$cauchy <- as.factor( substr( 
+  colnames(data.frame(het_cauchy$fitted))[max.col(data.frame(het_cauchy$fitted),
+                                                  ties.method="first")], 2, 3 ) )
+
+##### 2.1.5. Linear Discrimination Model
+train_L01 <- train_L01[ order(train_L01$id) ,]
+het_lda <-  lda(NSSEC_RES ~ ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn, data = train_L01)
+het_train$lin_dis <- as.data.frame(predict(het_lda, newdata = train_L01) )$class
+
+##### 2.1.6. Quadratic Discrimination Model
+train_L01 <- train_L01[ order(train_L01$id) ,]
+het_qda <-  qda(NSSEC_RES ~ ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn, data = train_L01)
+het_train$qua_dis <- as.data.frame(predict(het_qda, newdata = train_L01) )$class
+rm(het_ols)
+
+##### 2.1.7. Decision Tree
+train_L01 <- train_L01[ order(train_L01$id) ,]
+het_tree <-  rpart(NSSEC_RES ~ ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn, 
+                   data = train_L01, control = list(maxdepth = 15))
+
+prune_het_tree<- prune(het_tree, cp=   het_tree$cptable[which.min(het_tree$cptable[,"xerror"]),"CP"])
+res_tree <-  as.data.frame( predict(prune_het_tree, newdata = train_L01))
+het_train$tree <- as.factor( substr( 
+  colnames(data.frame(res_tree))[max.col(data.frame(res_tree),
+                                         ties.method="first")], 2, 3 ) )
+
+
+##### 2.1.8 Stacking - Average
+het_train$st_avg <- ((as.numeric(het_train$ols) + as.numeric(het_train$logit) + as.numeric(het_train$probit) + 
+                        as.numeric(het_train$cauchy) + as.numeric(het_train$lin_dis) + 
+                        as.numeric(het_train$qua_dis) + as.numeric(het_train$tree)))
+het_train$avg <- round(het_train$st_avg/7, 0)
+
+insinstall.packages("modeest")
+install.packages("BiocManager")
+library("BiocManager")
+BiocManager::install("genefilter")
+het_train$mode <- apply(het_train[ , 3:9], 1, mfv)
+
+##### 2.1.9. Stacking - Linear regression
+colnames(het_train)
+het_train$actual2 <- as.numeric(het_train$actual)
+stack1 <- lm(actual2 ~ ols + logit + probit + cauchy + lin_dis + qua_dis + tree, data = het_train  )
+het_train$st_ols <- stack1$fitted
+het_train$st_ols <- round(het_train$st_ols, 0)
+
+
+##### 2.1.10. Stacking - Logit regression
+stack2 <- polr(actual ~ ols + logit + probit + cauchy + lin_dis + qua_dis + tree, 
+               data = het_train,   Hess=TRUE)
+het_train$st_logit <- as.factor( substr( 
+  colnames(data.frame(stack2$fitted))[max.col(data.frame(stack2$fitted),
+                                              ties.method="first")], 2, 3 ) )
+
+
+#### 2.1.11. Fill in the Performance Table
+het_train <- het_train[, -12]
+het_train <- het_train[, -10]
+
+rm(het_train$actual2)
+
+
+for(i in 2:11) het_train[,i] <- as.numeric(het_train[,i])
+
+het_train$logit <- ifelse(het_train$logit==3, 4, het_train$logit)
+het_train$logit <- ifelse(het_train$logit==2, 3, het_train$logit)
+
+het_train$probit <- ifelse(het_train$probit==3, 4, het_train$probit)
+het_train$probit <- ifelse(het_train$probit==2, 3, het_train$probit)
+
+
+for(i in 3:12){
+  perf_measure_train$accuracy[i-2] <- length(which(het_train$actual == het_train[,i]))/118550
+  perf_measure_train$`NSSEC-1`[i-2] <- length(which(het_train$actual==1 & het_train$actual == het_train[,i]))/length(which(het_train$actual==1))
+  perf_measure_train$`NSSEC-2`[i-2] <- length(which(het_train$actual==2 & het_train$actual == het_train[,i]))/length(which(het_train$actual==2))
+  perf_measure_train$`NSSEC-3`[i-2] <- length(which(het_train$actual==3 & het_train$actual == het_train[,i]))/length(which(het_train$actual==3))
+  perf_measure_train$`NSSEC-4`[i-2] <- length(which(het_train$actual==4 & het_train$actual == het_train[,i]))/length(which(het_train$actual==4))
+}
+
+length(which(het_train$actual == het_train$avg))
+
+### 2.1.12 Estimate Stackign with good models only
+#### 2.1.12.2. OLS
+stack3 <- lm(actual2 ~ cauchy + lin_dis + qua_dis + tree, data = het_train  )
+het_train$st_ols2 <- round(stack3$fitted, 0)
+length(which(het_train$actual == het_train$st_ols2))/118550
+
+#### 2.1.12.3. Averaging
+het_train$st_avg2 <- (( as.numeric(het_train$cauchy) + as.numeric(het_train$lin_dis) + 
+                          as.numeric(het_train$qua_dis) + as.numeric(het_train$tree)))
+het_train$avg2 <- round(het_train$st_avg2/4, 0)
+length(which(het_train$actual == het_train$avg2 ))/118550
+##################################################################################
+
+
+
+
+
+
+
+
+
+
+##################################################################################
+##### 2.2. GENERALISE RESULTS TO TESTING SET ######################################
+# 2.2.1. Prepare the dataset
+het_test <- as.data.frame(matrix(ncol = 12, nrow = nrow(test_L01)) )
+colnames(het_test) <- c("id", "actual", "ols", "logit", "probit", "cauchy", "lin_dis", 
+                        "qua_dis" , "tree", "st_avg", "st_reg", "st_log") 
+perf_measure_test <- as.data.frame(matrix(ncol = 6, nrow = 10 ) )
+colnames(perf_measure_test) <- c("model", "accuracy", "NSSEC-1", "NSSEC-2", "NSSEC-3", "NSSEC-4")
+perf_measure_test$model <- c("ols", "logit", "probit", "cauchy", "lin_dis", 
+                             "qua_dis" , "tree", "avg", "st_reg", "st_log")
+het_test$id <- test_L01$id
+het_test$actual <- test_L01$NSSEC_RES
+
+
+# 2.2.2. Make Predictions 
+het_test$ols <- round(predict(het_ols, newdata = test_L01), 0)
+het_test$ols <- ifelse(het_test$ols==5, 4, het_test$ols)
+het_test$ols <- as.factor(het_test$ols)
+het_test$logit <- predict(het_log, newdata = test_L01,  type = "class")
+het_test$probit <- predict(het_prob, newdata = test_L01,  type = "class")
+het_test$cauchy <- predict(het_cauchy, newdata = test_L01,  type = "class")
+het_test$lin_dis <- as.data.frame(predict(het_lda, newdata = test_L01) )$class
+het_test$qua_dis <- as.data.frame(predict(het_qda, newdata = test_L01) )$class
+het_test$tree <- predict(het_tree, newdata = test_L01,  type = "class")
+het_test$st_avg <- round((((as.numeric(het_test$ols) + as.numeric(het_test$logit) + 
+                              as.numeric(het_test$probit) + as.numeric(het_test$cauchy) + 
+                              as.numeric(het_test$lin_dis) + as.numeric(het_test$qua_dis) + 
+                              as.numeric(het_test$tree)))  /7) )
+het_test$st_reg <- round(predict(stack1, newdata = het_test), 0)
+het_test$st_log <- predict(stack2, newdata = het_test, type = "class")
+
+
+het_test$logit <- ifelse(het_test$logit==3, 4, het_test$logit)
+het_test$logit <- ifelse(het_test$logit==2, 3, het_test$logit)
+
+het_test$probit <- ifelse(het_test$probit==3, 4, het_test$probit)
+het_test$probit <- ifelse(het_test$probit==2, 3, het_test$probit)
+
+
+for(i in 2:12) het_test[,i] <- as.numeric(het_test[,i])
+
+for(i in 3:12){
+  perf_measure_test$accuracy[i-2] <- length(which(het_test$actual == het_test[,i]))/39517
+  perf_measure_test$`NSSEC-1`[i-2] <- length(which(het_test$actual==1 & het_test$actual == het_test[,i]))/length(which(het_test$actual==1))
+  perf_measure_test$`NSSEC-2`[i-2] <- length(which(het_test$actual==2 & het_test$actual == het_test[,i]))/length(which(het_test$actual==2))
+  perf_measure_test$`NSSEC-3`[i-2] <- length(which(het_test$actual==3 & het_test$actual == het_test[,i]))/length(which(het_test$actual==3))
+  perf_measure_test$`NSSEC-4`[i-2] <- length(which(het_test$actual==4 & het_test$actual == het_test[,i]))/length(which(het_test$actual==4))
+}
+
+####################################################################################
+
+
+
+
+
+
+
+
+
+
+###################################################################################
+##### 2.2. RANDOM FOREST    #######################################################
+###################################################################################
+
+rm(het_cauchy, het_lda, het_log, het_prob, het_qda, het_tree, stack1, stack2, stack3, prune_het_tree, het_ols)
+rm(res_tree, perf_measure, training_df)
+
+
+plot(test_L01$INC_RANK)
+# 2.2.1. Create a function that runs several Random Forests 
+rf_accuracy <- as.data.frame( matrix(ncol = 3, nrow = 6) )
+colnames(rf_accuracy) <- c("model", "accuracy_train", "accuracy_test")
+
+run_rf <- function(pred, nod, tab){
+  set.seed(2)
+  name <<- randomForest(NSSEC_RES ~ ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn , 
+                        data = train_L01, mtry = pred,  maxnodes = nod,
+                        importance = TRUE)
+  print(table(predict( name), train_L01$NSSEC_RES) )
+  # Train
+  rf_accuracy[tab,2] <<- (table(predict( name), train_L01$NSSEC_RES)[1,1] + table(predict( name), train_L01$NSSEC_RES)[2,2] + 
+                            table(predict( name), train_L01$NSSEC_RES)[3,3] + table(predict( name), train_L01$NSSEC_RES)[4,4])/118550 
+  # Test
+  print(table(predict( name, newdata=test_L01), test_L01$NSSEC_RES ) )
+  rf_accuracy[tab,3] <<-((table(predict( name, newdata=test_L01), test_L01$NSSEC_RES)[1,1] + 
+                            table(predict( name, newdata=test_L01), test_L01$NSSEC_RES)[2,2] + 
+                            table(predict( name, newdata=test_L01), test_L01$NSSEC_RES)[3,3] + 
+                            table(predict( name, newdata=test_L01), test_L01$NSSEC_RES)[4,4])/39517)
+}
+
+
+
+
+run_rf(pred = 2, nod = 5, tab = 1 ) # RF - maxnodes 2, sqrt 2
+run_rf(pred = 2, nod = 10, tab = 2) # RF - maxnodes 10, pred 2
+run_rf(pred = 4, nod = 10, tab = 3) # RF - maxnodes 10, pred 4
+run_rf(pred = 2, nod = 30, tab = 4) # RF - maxnodes 30, pred 2
+run_rf(pred = 4, nod = 40, tab = 5) # RF - maxnodes 30, pred 2
+plot(rf_name2)
+run_rf(pred = 4, nod = 400, tab = 6) # RF - maxnodes 30, pred 2
+plot(name)
+
+
+par(mfrow=c(1,2) )
+
+plot(name, 
+     main = "MSE for Random Forest", 
+     lwd = 1.5,
+     ylim = c(0,1),
+     xlim = c(0,100))
+abline(h = 0, lty = 3, col = "darkgreen")
+abline(h = 1, lty = 3, col = "darkgreen")
+legend("topright", 
+       colnames(name$err.rate),
+       col=1:5, cex=0.8, fill=1:5)
+
+require(caret)
+
+imp_vars <- as.data.frame(varImp(name, numTrees = 250))
+imp_vars$Overall <- imp_vars$`1` + imp_vars$`2` + imp_vars$`3` + imp_vars$`4`
+imp_vars$total <- sum(imp_vars$Overall)
+imp_vars$share <- imp_vars$Overall/imp_vars$total
+
+barplot(imp_vars$share, horiz = T, 
+        names.arg=c("Ethnicity", "Gender", "Region", "Occupation" ),
+        col = "blue",
+        main = "Relative MSE \n explained by each predictor",
+        cex.axis = 1,
+        cex.names = 0.8,
+        angle = 60)
+abline()
+
+varImpPlot(name, main = "% of MSE explained \n by each variable" , 
+           labels = c(    "Region", "Ethnicity","Gender","Occupation" ), 
+           color = "blue" ,
+           type = 1)
+
+
+
+
+
+
+
+## 2.2.2. RF Stratified Sampling
+rf_accuracy_str <- as.data.frame( matrix(ncol = 3, nrow = 6) )
+colnames(rf_accuracy_str) <- c("model", "accuracy_train", "accuracy_test")
+
+run_rf2 <- function(pred, nod, tab, num_tr){
+  set.seed(2)
+  name2 <<- randomForest(NSSEC_RES ~ ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn , 
+                         data = train_L01, mtry = pred,  maxnodes = nod,
+                         importance = TRUE, strata = train_L01$NSSEC_RES, ntree = num_tr)
+  print(table(predict( name2), train_L01$NSSEC_RES) )
+  # Train
+  rf_accuracy_str[tab,2] <<- (table(predict( name2), train_L01$NSSEC_RES)[1,1] + table(predict( name2), train_L01$NSSEC_RES)[2,2] + 
+                                table(predict( name2), train_L01$NSSEC_RES)[3,3] + table(predict( name2), train_L01$NSSEC_RES)[4,4])/118550 
+  # Test
+  print(table(predict( name2, newdata=test_L01), test_L01$NSSEC_RES ) )
+  rf_accuracy_str[tab,3] <<-((table(predict( name2, newdata=test_L01), test_L01$NSSEC_RES)[1,1] + 
+                                table(predict( name2, newdata=test_L01), test_L01$NSSEC_RES)[2,2] + 
+                                table(predict( name2, newdata=test_L01), test_L01$NSSEC_RES)[3,3] + 
+                                table(predict( name2, newdata=test_L01), test_L01$NSSEC_RES)[4,4])/39517)
+}
+
+
+
+run_rf2(pred = 2, nod = 5, tab = 1, num_tr = 250) # RF - maxnodes 2, sqrt 2
+rf_accuracy_str[1,1] <- " pred 2, max nod 2, tree 250"
+
+run_rf2(pred = 2, nod = 10, tab = 2, num_tr = 500) # RF - maxnodes 10, pred 2
+rf_accuracy_str[2,1] <- " pred 2, max nod 10, tree 500"
+
+run_rf2(pred = 2, nod = 10, tab = 3, num_tr = 1500) # RF - maxnodes 10, pred 4
+rf_accuracy_str[3,1] <- " pred 2, max nod 10, tree 1550"
+
+run_rf2(pred = 2, nod = 30, tab = 4, num_tr = 500) # RF - maxnodes 30, pred 2
+rf_accuracy_str[4,1] <- " pred 2, max nod 30, tree 500"
+
+run_rf2(pred = 4, nod = 30, tab = 5, num_tr = 500) # RF - maxnodes 30, pred 2
+rf_accuracy_str[5,1] <- " pred 4, max nod 30, tree 500"
+
+run_rf2(pred = 2, nod = 400, tab = 6, num_tr = 500) # RF - maxnodes 30, pred 2
+rf_accuracy_str[6,1] <- " pred 2, max nod 400, tree 500"
+
+
+plot(name2, 
+     main = "MSE for Random Forest", 
+     lwd = 1.5,
+     ylim = c(0,1),
+     xlim = c(0,100))
+abline(h = 0, lty = 3, col = "darkgreen")
+abline(h = 1, lty = 3, col = "darkgreen")
+legend("topright", 
+       colnames(name$err.rate),
+       col=1:5, cex=0.8, fill=1:5)
+
+varImpPlot(name2, main = "Relative MSE explained \n by each variable" , 
+           labels = c(    "Region", "Ethnicity","Gender","Occupation" ), 
+           color = "blue" ,
+           type = 1)
+
+###################################################################################
+
+
+
+
+
+
+
+
+
+###################################################################################
+##### 2.3. BOOSTING  ##############################################################
+###################################################################################
+##### 2.4. 
+## GBM - results 
+gbm_accuracy<- as.data.frame( matrix(ncol = 3, nrow = 6) )
+colnames(gbm_accuracy) <- c("model", "accuracy_train", "accuracy_test")
+
+run_gbm <- function(num_trees, shrink, split, max_obs, tab){
+  set.seed(2)
+  name <<- gbm(NSSEC_RES ~ ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn , 
+               data=train_L01, 
+               distribution="multinomial",
+               n.trees = num_trees,
+               interaction.depth= split,
+               shrinkage = shrink,
+               n.minobsinnode = max_obs,
+               class.stratify.cv = T)
+  
+  pred_object1 <- round(predict(name, newdata=train_L01, n.trees=num_trees, type = "response"))
+  gbm_predictions <- colnames(pred_object1)[apply(pred_object1, 1, which.max)]
+  
+  print(table(gbm_predictions, train_L01$NSSEC_RES) )
+  # Train
+  gbm_accuracy[tab,2] <<- ( table(gbm_predictions, train_L01$NSSEC_RES)[1,1] + table(gbm_predictions, train_L01$NSSEC_RES)[2,2] + 
+                              table(gbm_predictions, train_L01$NSSEC_RES)[3,3] + table(gbm_predictions, train_L01$NSSEC_RES)[4,4]) /118550 
+  # Test
+  pred_object2 <- round(predict(name, newdata=test_L01, n.trees=num_trees, type = "response"))
+  test_predictions <- colnames(pred_object2)[apply(pred_object2, 1, which.max)]
+  
+  print(table(test_predictions , test_L01$NSSEC_RES ) )
+  gbm_accuracy[tab,3] <<-(   table(test_predictions , test_L01$NSSEC_RES)[1,1] + 
+                               table(test_predictions , test_L01$NSSEC_RES)[2,2] + 
+                               table(test_predictions , test_L01$NSSEC_RES)[3,3] + 
+                               table(test_predictions , test_L01$NSSEC_RES)[4,4] ) /39517
+}
+
+# GBM - maxnodes 2, sqrt 2
+run_gbm(num_tree = 100, shrink = 0.1, split = 2, max_obs = 10, tab = 1) 
+gbm_accuracy[1,1] <- " Num_tree 100, Shrink 0.1, Split 2, Max_obs 10"
+
+run_gbm(num_tree = 1000, shrink = 0.1, split = 2, max_obs = 10, tab = 2) 
+gbm_accuracy[2,1] <- " Increase trees"
+
+run_gbm(num_tree = 100, shrink = 0.05, split = 2, max_obs = 10, tab = 3) 
+gbm_accuracy[3,1] <- " Decrease shrink"
+
+run_gbm(num_tree = 100, shrink = 0.1, split = 4, max_obs = 10, tab = 4)
+gbm_accuracy[4,1] <- " Increase Split"
+
+run_gbm(num_tree = 100, shrink = 0.1, split = 2, max_obs = 100, tab = 5) 
+gbm_accuracy[5,1] <- " Decrease Max Obs"
+
+plot(name)
+run_gbm(num_tree = 100, shrink = 0.1, split = 2, max_obs = 10, tab = 1) 
+gbm_accuracy_str[6,1] <- " pred 2, max nod 400, tree 500"
+
+imp_vars <- as.data.frame(varImp(name, numTrees = 100))
+imp_vars$total <- sum(imp_vars$Overall)
+imp_vars$share <- imp_vars$Overall/imp_vars$total
+barplot(imp_vars$share, horiz = T, 
+        names.arg=c("Ethnicity", "Gender", "Region", "Occ" ),
+        col = "blue",
+        main = "Relative MSE \n explained by each predictor",
+        cex.axis = 1,
+        cex.names = 1,
+        angle = 60,
+        xlim = c(0, 0.8))
+par(mfrow=c(1,1))
+
+# boost1  <- gbm(NSSEC_RES ~ ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn, 
+#                  data=train_L01, 
+#                  distribution="multinomial",
+#                  n.trees=500,
+#                  interaction.depth=4,
+#                  shrinkage = 0.05,
+#                  class.stratify.cv = T)
+
+summary(boost1)
+pred_object <- round(predict(boost1, newdata=train_L01, n.trees=200, type = "response"))
+
+gbm_predictions <- colnames(pred_object)[apply(pred_object, 1, which.max)]
+
+
+table(train_L01$NSSEC_RES,  gbm_predictions)
+table(predict(boost1, newdata=train_L01, n.trees=200), train_L01$NSSEC_RES )
+mean((yhat.boost-boston.test)^2)
+
+(table(gbm_predictions, train_L01$NSSEC_RES)[1,1] + table(gbm_predictions, train_L01$NSSEC_RES)[2,2] + 
+    table(gbm_predictions, train_L01$NSSEC_RES)[3,3] + table(gbm_predictions, train_L01$NSSEC_RES)[4,4])/118550 
+# Test
+
+write.csv(perf_measure_test, file = "perf_measure_test.csv")
+write.csv(perf_measure_train, file = "perf_measure_train.csv")
+write.csv(rf_accuracy, file = "rf_accuracy.csv")
+write.csv(rf_accuracy_str, file = "rf_accuracy_str.csv")
+
+
+```
+
+
+################################
+END OF PART 1: PREDICTING CLASS
+END OF PART 1: PREDICTING CLASS
+END OF PART 1: PREDICTING CLASS
+END OF PART 1: PREDICTING CLASS
+END OF PART 1: PREDICTING CLASS
+################################
+
+
+```{r script, eval = FALSE, echo = TRUE}
+##########################################################################
+####  2. REGRESSION: Income    ###########################################
+model_performance <- as.data.frame( matrix(ncol = 5, nrow = 25) )
+colnames(model_performance) <- c("model", "r_sq_train", "r_sq_test", "mse_train", "mse_test")
+
+
+#### 2.1. Useful functions
+#### 2.1.1. RMSEA
+mse_fun <- function(rf, actual, data) {
+  sum(predict( rf, newdata = data) - actual)^2
+}
+
+#### 2.1.2. R-squared
+r_sq_fun <- function(rf, actual, data){
+  1 - ( sum((actual - predict( rf, newdata = data))^2)/sum((actual - mean(actual))^2) )
+}
+  
+#### 2.2. Fixed Effects Model
+ols1 <- lm(INC_RANK ~ NSSEC_old + ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn , data = train_L01 )
+summary(ols1)
+model_performance[1,1] <- "Fixed Effects Model" 
+model_performance[1,2] <- r_sq_fun(ols1, train_L01$INC_RANK, train_L01)
+model_performance[1,3] <- r_sq_fun(ols1, test_L01$INC_RANK, test_L01)
+model_performance[1,4] <- rmse_fun(ols1, train_L01$INC_RANK, train_L01)
+model_performance[1,5] <- rmse_fun(ols1, test_L01$INC_RANK, test_L01)
+
+### 2.3. Multilevel modelling 
+
+###################################################################################
+
+
+
+
+
+
+
+
+##### 2.2. RANDOM FOREST    #######################################################
+
+
+
+# 2.2.1. Create a function that runs several Random Forests 
+
+
+
+run_rf <- function(pred, nod, num_tree, tab, name = "name2", correct = FALSE){
+  set.seed(2)
+  mod <<- randomForest(INC_RANK ~ NSSEC_RES + ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn , 
+                       data = train_L01, 
+                       mtry = pred,  
+                       maxnodes = nod,
+                       ntree = num_tree,
+                       importance = TRUE,
+                       corr.bias = correct)
+  print("so far so good")
+  model_performance[tab,2] <<- r_sq_fun(mod, train_L01$INC_RANK, train_L01)
+  model_performance[tab,3] <<- r_sq_fun(mod, test_L01$INC_RANK, test_L01)
+  model_performance[tab,4] <<- mse_fun(mod, train_L01$INC_RANK, train_L01)
+  model_performance[tab,5] <<- mse_fun(mod, test_L01$INC_RANK, test_L01)
+  model_performance[tab,1] <<- name
+}
+
+
+name <- randomForest(INC_RANK ~ NSSEC_RES + ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn , 
+                     data = train_L01, mtry = 2,  maxnodes = 5,
+                     importance = TRUE)
+
+
+
+run_rf(pred = 2, nod = 5, num_tree = 500 , tab = 2, name = "RF: pred 2; nod 5" ) # RF - maxnodes 2, sqrt 2
+run_rf(pred = 2, nod = 100, num_tree = 500, tab = 3, name = "RF: Increase nodes" ) # RF - maxnodes 2, sqrt 2
+run_rf(pred = 2, nod = 5, num_tree = 1000, tab = 4, name = "RF: Increase trees" ) # RF - maxnodes 2, sqrt 2
+run_rf(pred = 2, nod = 5, num_tree = 500, tab = 5, name = "RF: Bias Correction", correct = TRUE  ) # Bias Correction
+run_rf(pred = 2, nod = 5, num_tree = 250, tab = 6, name = "RF: Decrease trees" ) # RF - maxnodes 2, sqrt 2
+run_rf(pred = 2, nod = 500, num_tree = 300, tab = 7, name = "RF: Less trees + More nodes"  ) # Final Random Forest
+run_rf(pred = 3, nod = 5, num_tree = 300, tab = 8, name = "RF: More predictors"  ) # Final Random Forest
+
+plot(model)
+
+
+
+
+
+##### 2.3. BOOSTING  ##############################################################
+
+##### 2.4. 
+## GBM - results 
+run_gbm <- function(num_trees, shrink, split, max_obs, tab, name = "name2"){
+  set.seed(2)
+  mod <<- gbm(INC_RANK ~ NSSEC_RES + ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn , 
+                      data=train_L01, 
+                      distribution="multinomial",
+                      n.trees = num_trees,
+                      interaction.depth= split,
+                      shrinkage = shrink,
+                      n.minobsinnode = max_obs)
+  print("so far so good")
+  model_performance[tab,2] <<- r_sq_fun(mod, train_L01$INC_RANK, train_L01)
+  model_performance[tab,3] <<- r_sq_fun(mod, test_L01$INC_RANK, test_L01)
+  model_performance[tab,4] <<- mod$train.error
+  model_performance[tab,5] <<- 
+  model_performance[tab,1] <<- name
+}
+
+
+mod <- gbm(INC_RANK ~ NSSEC_RES + ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn , 
+            data=train_L01, 
+            distribution="gaussian",
+            n.trees = 100,
+            interaction.depth= 2,
+            shrinkage = 0.1,
+            n.minobsinnode = 100)
+cor( predict(mod, data = train_L01, n.trees = 100), train_L01$INC_RANK)^2
+plot(predict(mod, data = train_L01, n.trees = 100), train_L01$INC_RANK)
+summary(predict(mod, data = train_L01, n.trees = 100))
+
+run_gbm <- function(num_trees, shrink, split, max_obs, tab){
+  set.seed(2)
+  name <<- gbm(NSSEC_RES ~ ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn , 
+               data=train_L01, 
+               distribution="multinomial",
+               n.trees = num_trees,
+               interaction.depth= split,
+               shrinkage = shrink,
+               n.minobsinnode = max_obs,
+               class.stratify.cv = T)
+  
+  pred_object1 <- round(predict(name, newdata=train_L01, n.trees=num_trees, type = "response"))
+  gbm_predictions <- colnames(pred_object1)[apply(pred_object1, 1, which.max)]
+  
+  print(table(gbm_predictions, train_L01$NSSEC_RES) )
+  # Train
+  gbm_accuracy[tab,2] <<- ( table(gbm_predictions, train_L01$NSSEC_RES)[1,1] + table(gbm_predictions, train_L01$NSSEC_RES)[2,2] + 
+                              table(gbm_predictions, train_L01$NSSEC_RES)[3,3] + table(gbm_predictions, train_L01$NSSEC_RES)[4,4]) /118550 
+  # Test
+  pred_object2 <- round(predict(name, newdata=test_L01, n.trees=num_trees, type = "response"))
+  test_predictions <- colnames(pred_object2)[apply(pred_object2, 1, which.max)]
+  
+  print(table(test_predictions , test_L01$NSSEC_RES ) )
+  gbm_accuracy[tab,3] <<-(   table(test_predictions , test_L01$NSSEC_RES)[1,1] + 
+                               table(test_predictions , test_L01$NSSEC_RES)[2,2] + 
+                               table(test_predictions , test_L01$NSSEC_RES)[3,3] + 
+                               table(test_predictions , test_L01$NSSEC_RES)[4,4] ) /39517
+}
+
+# GBM - maxnodes 2, sqrt 2
+run_gbm(num_tree = 100, shrink = 0.1, split = 2, max_obs = 10, tab = 1) 
+gbm_accuracy[1,1] <- " Num_tree 100, Shrink 0.1, Split 2, Max_obs 10"
+
+run_gbm(num_tree = 1000, shrink = 0.1, split = 2, max_obs = 100, tab = 2) 
+gbm_accuracy[2,1] <- " Increase trees"
+
+run_gbm(num_tree = 100, shrink = 0.05, split = 2, max_obs = 100, tab = 3) 
+gbm_accuracy[3,1] <- " Decrease shrink"
+
+run_gbm(num_tree = 100, shrink = 0.1, split = 4, max_obs = 100, tab = 4)
+gbm_accuracy[4,1] <- " Increase Split"
+
+run_gbm(num_tree = 100, shrink = 0.1, split = 2, max_obs = 100, tab = 5) 
+gbm_accuracy[5,1] <- " Decrease Max Obs"
+
+plot(name)
+run_gbm(num_tree = 1000, shrink = 0.1, split = 4, max_obs = 200, tab = 6) 
+gbm_accuracy[6,1] <- " pred 2, max nod 400, tree 500"
+
+
+
+plot(name, i.var = 4, return.grid = F)
+
+require(mlr)
+pred_object1 <- round(predict(name, newdata=test_L01, n.trees=1000))
+pred_object2 <- makePrediction(pred_object1, test_L01$NSSEC_RES)
+GBM_roc <- performance(pred_object2, "tpr", "fpr")
+plot(GBM_roc)
+library(plotmo)   
+plot_gbm(name, ylim = c(0,1))
+
+# boost1  <- gbm(NSSEC_RES ~ ETHCEN15 + MAINEARN + REG_CODE + RES_OCCn, 
+#                  data=train_L01, 
+#                  distribution="multinomial",
+#                  n.trees=500,
+#                  interaction.depth=4,
+#                  shrinkage = 0.05,
+#                  class.stratify.cv = T)
+
+summary(boost1)
+pred_object <- round(predict(boost1, newdata=train_L01, n.trees=200, type = "response"))
+
+gbm_predictions <- colnames(pred_object)[apply(pred_object, 1, which.max)]
+
+
+
+
+
+table(train_L01$NSSEC_RES,  gbm_predictions)
+table(predict(boost1, newdata=train_L01, n.trees=200), train_L01$NSSEC_RES )
+mean((yhat.boost-boston.test)^2)
+
+(table(gbm_predictions, train_L01$NSSEC_RES)[1,1] + table(gbm_predictions, train_L01$NSSEC_RES)[2,2] + 
+    table(gbm_predictions, train_L01$NSSEC_RES)[3,3] + table(gbm_predictions, train_L01$NSSEC_RES)[4,4])/118550 
+# Test
+
+write.csv(perf_measure_test, file = "perf_measure_test.csv")
+write.csv(perf_measure_train, file = "perf_measure_train.csv")
+write.csv(rf_accuracy, file = "rf_accuracy.csv")
+write.csv(rf_accuracy_str, file = "rf_accuracy_str.csv")
+train_L01 <- readRDS("train_L01.RDs")
+test_L01 <- readRDS("test_L01.RDs")
+test_L01 <- read.csv("test_L01.csv")
+write.csv(gbm_accuracy, file = "gbm_accuracy.csv")
+
+```
+
+
+
+################################
+END OF PART 2: PREDICTING INCOME
+END OF PART 2: PREDICTING INCOME
+END OF PART 2: PREDICTING INCOME
+END OF PART 2: PREDICTING INCOME
+END OF PART 2: PREDICTING INCOME
+################################
+
+
+```{r script, eval = FALSE, echo = TRUE}
+###################################################################################
+##### 3. VISALUSATIONS    #######################################################
+###################################################################################
+setwd("~/Project_finito")
+
+
+# 1. Heterogenous
+train_perf <- read.csv("perf_measure_train.csv")
+test_perf <- read.csv("perf_measure_test.csv")
+
+# Merge 
+accuracy <- merge(train_perf, test_perf, by = "model")
+colnames(accuracy)[3] <- "train_accuracy"
+colnames(accuracy)[9] <- "test_accuracy"
+
+
+plot(accuracy$NSSEC.1.x, accuracy$NSSEC.2.x)
+
+accuracy <- accuracy[order(accuracy[,2]), ]
+
+barplot( t(as.matrix(accuracy[c(1:10), c(3,9)])),
+         beside = T,
+         names = c("OLS", "Logit", "Probit", "Cauchy", "LDA", "QDA", "Tree", 
+                    "Avr", "OLS \n Stack", "Logit \n Stack"),
+         ylim = c(0, 0.87),
+         main = "Accuracy Rate \n NSSEC classification",
+         col = c("darkblue", "darkred"),
+         axis.lty = 1)
+abline(h = 0.6602222, col = "darkgreen", lty = 3)
+text(2, 0.72, labels = "Max Accuracy \n in Test: LDA", cex = 0.7, col = "darkgreen")
+legend(20, 0.84, legend = c("train", "test"), col=1:5, cex=0.8, fill=c("darkblue", "darkred"), ncol =2)
+
+accuracy[9,3] <- 0.4912
+barplot( t(as.matrix(accuracy[c(5, 8:10), c(3, 9)])),
+         beside = T,
+         names = c("LDA", "Avr", "OLS \n Stack", "Logit \n Stack"),
+         ylim = c(0, 0.87),
+         main = "Accuracy Rate \n Models Stacking",
+         col = c("darkblue", "darkred"))
+abline(h = 0.6602222, col = "darkgreen", lty = 3)
+text(2, 0.72, labels = "Max R-Squared \n in Test: LDA", cex = 0.7, col = "darkgreen")
+legend(8, 0.84, legend = c("train", "test"), col=1:5, cex=0.8, fill=c("darkblue", "darkred"), ncol =2)
+
+
+
+
+
+# 2. All Performance Indicat
+rm(corpus, corpus.clean)
+rm(dtm)
+gbm_income_perf <- read.csv("gbm_perf.csv")
+rm(gbm_income_perf)
+setwd("~/Project_finito")
+rf_class_perf <- read.csv("rf_accuracy.csv")
+gbm_class_perf <- read.csv("gbm_accuracy.csv")
+colnames(accuracy)[2] <- "X" 
+colnames(accuracy)[1] <- "model" 
+colnames(accuracy)[3] <- "accuracy_train" 
+colnames(accuracy)[9] <- "accuracy_test" 
+
+
+final_class <- as.data.frame(rbind(accuracy[8, c(1, 2, 3, 9)], rf_class_perf[6,], gbm_class_perf[6,],  
+                                   deparse.level = F, make.row.names = F ))
+
+final_class$model <- as.character(final_class$model )
+final_class[1,1] <- "Heth Stacking" 
+final_class[2,1] <- "Random \n Forest" 
+final_class[3,1] <- "GBM" 
+final_class <- as.data.frame(rbind(final_class[c(1,2),], ))
+
+barplot( t(as.matrix(final_class[c(1:3), c(3, 4)])),
+         beside = T,
+         names = c("Averaging", "Random \n Forest", "GBM"),
+         ylim = c(0, 0.87),
+         main = "Accuracy Rate \n Models Stacking",
+         col = c("darkblue", "darkred"),
+         axis.lty = 1)
+abline(h = 0.6654857, col = "darkgreen", lty = 3)
+text(2, 0.72, labels = "Max Accuracy \n in Test: RF", cex = 0.7, col = "darkgreen")
+legend(6, 0.84, legend = c("train", "test"), col=1:5, cex=0.8, fill=c("darkblue", "darkred"), ncol =2)
+text(x = xx, y = dat$freqs, label = dat$freqs, pos = 3, cex = 0.8, col = "red")
+
+
+rf_inc <- read.csv("rf_income_performance.csv")
+lm_inc <- rf_inc[1,]
+rf_inc <- rf_inc[9,]
+
+
+gbm_inc <- read.csv("gbm_perf.csv")
+gbm_inc <- gbm_inc[23,]
+
+ann_inc <- as.data.frame(matrix(ncol = 6, nrow = 1))
+colnames(ann_inc) <- c("X", "model", "r_sq_train", "r_sq_test", "mse_train",  "mse_test" )
+ann_inc[1,2] <- "ANN"
+ann_inc[1,3] <- 0.446
+ann_inc[1,4] <- 0.411
+
+final_income <- as.data.frame(rbind(lm_inc, rf_inc, gbm_inc, ann_inc))
+
+
+
+
+barplot( t(as.matrix(final_income[c(1:4), c(3, 4)])),
+         beside = T,
+         names = c("OLS", "Random \n Forest", "GBM", "ANN"),
+         ylim = c(0, 0.6),
+         main = "R-Squared \n Predicting Income",
+         col = c("darkblue", "darkred"),
+         axis.lty = 1)
+abline(h = 0.4332717, col = "darkgreen", lty = 3)
+text(2, 0.52, labels = "Max R-squared \n in Test: RF", cex = 0.7, col = "darkgreen")
+
+
+
+
+
+```
+
+
+
+################################
+END OF PART 3: VISALUSATIONS
+END OF PART 3: VISALUSATIONS
+END OF PART 3: VISALUSATIONS
+END OF PART 3: VISALUSATIONS
+END OF PART 3: VISALUSATIONS
+################################
+
+
+```{r script, eval = FALSE, echo = TRUE}
+
+##########################################################################
+##########################################################################
+####### 4. NEURAL NETWORK   ###########################################
+##########################################################################
+##########################################################################
+
+####### 1. LOADING THE DATA   ###########################################
+
+setwd("~/Project_finito")
+train_L01 <- readRDS("train_L01.RDs")
+test_L01 <- readRDS("test_L01.RDs")
+
+library(neuralnet)
+# install.packages("dummies")
+library(dummies)
+# install.packages("mitml")
+library(mitml)
+# install.packages("janitor")
+library(janitor)
+##########################################################################
+
+# Preparation
+train_L01$data <- 1
+test_L01$data <- 2
+L01_an2 <- rbind(train_L01,  test_L01)
+L01_an <- L01_an2 
+
+# 6.3. Artificial Neural Network Prediction
+# 6.3.1. Recoding some variables for analysis
+L01_an2 <- cbind(L01_an2, dummy(L01_an$NSSEC_RES, sep = "-"))
+L01_an2 <- cbind(L01_an2, dummy(L01_an$ETHCEN15, sep = "-"))
+L01_an2 <- cbind(L01_an2, dummy(L01_an$MAINEARN, sep = "-"))
+rm(L01_an3)
+
+# 6.3.2. Recoding Occupation
+av_wage_occ  <- as.data.frame(as.matrix(table(L01_an2$RES_OCCn)))
+av_wage_occ[,2] <- rownames(av_wage_occ)
+colnames(av_wage_occ)[1] <- "Freq"
+colnames(av_wage_occ)[2] <- "Occ"
+L01_an2$RES_OCCn <- as.factor(L01_an2$RES_OCCn)
+means <- as.data.frame( table( clusterMeans( L01_an2$total_earnings, L01_an2$RES_OCCn)) )
+av_wage_occ <- merge(av_wage_occ, means, by = "Freq")
+colnames(av_wage_occ)[3] <- "avr_wage"
+av_wage_occ <- av_wage_occ[order(av_wage_occ$avr_wage, decreasing = F), ]
+av_wage_occ$rank <- c(1:25)
+av_wage_occ$rank <- av_wage_occ$rank/100
+
+# 6.3.2.1. Mergining with original data
+L01_an2 <- merge(L01_an2, av_wage_occ, by.x = "RES_OCCn", by.y = "Occ", all.x = T)
+
+# 6.3.2. Running the ANN
+###################### NEXT ROWS CHANGES COLUMNS NAMES!!!!!!! ##########################################################
+# saveRDS(L01_an2, "L01_an2.RDs")
+L01_an2 <- readRDS("L01_an2.RDs")
+
+
+# 6.3.2.1. INCLUDE group level predictors
+L01_an2 <- clean_names(L01_an2)
+colnames(L01_an2)
+L01_an2 <- cbind(L01_an2, dummy(L01_an2$reg_code, sep = "-reg-") )
+L01_an2 <- clean_names(L01_an2)
+# colnames(L01_an2) <-tolower()
+
+
+# 6.3.2.2. EARNINGS
+colnames(L01_an2)
+L01_an3 <- L01_an2[, c(8 , 13:33, 36, 37:48, 12)]
+# Normalise the data: min max 
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+L01_an_std_fe <- as.data.frame(lapply(L01_an3, normalize))
+
+
+# Create a training and test dataset
+train_L01 <- L01_an3[L01_an3$data==1, ]
+test_L01 <- L01_an3[L01_an3$data==2, ]
+
+# Drop unnecessary column
+train_L01 <- train_L01[, c(1:19, 21, 23:33) ]
+test_L01 <- test_L01[, c(1:19, 21, 23:33) ]
+
+df[sample(nrow(df), 3), ]
+
+L01_an_sampl_fe <- train_L01[sample(nrow(train_L01), 5000), ]
+
+n <- names(train_L01)
+f <- as.formula(paste("rank ~", paste(n[!n %in% "rank"], collapse = " + ")))
+
+
+# NN 1: 1 hidden layers with 8 8
+nn_fe1 <-neuralnet( inc_rank ~ . ,
+                    data = test_L01 ,
+                    hidden = c(8, 8),
+                    startweights = set.seed(123),
+                    act.fct = "logistic",
+                    stepmax = 10e6)
+cor(neuralnet::compute(nn_fe1, train_L01)$net.result, train_L01$inc_rank)^2
+# R-squared: 0.402
+
+
+# NN2: 1 hidden layer with 16
+nn_fe2 <-neuralnet( inc_rank ~ . ,
+                    data = test_L01 ,
+                    hidden = 16,
+                    startweights = set.seed(123),
+                    act.fct = "logistic",
+                    stepmax = 10e6)
+cor(neuralnet::compute(nn_fe2, train_L01)$net.result, train_L01$inc_rank)^2
+# R-squared: 0,411
+
+# NN3: 2 hidden layer with 12, 4
+nn_fe3 <-neuralnet( inc_rank ~ . ,
+                    data = test_L01,
+                    hidden = c(12, 4),
+                    startweights = set.seed(123),
+                    act.fct = "logistic",
+                    stepmax = 10e6)
+cor(neuralnet::compute(nn_fe3, test_L01)$net.result, train_L01$inc_rank)^2
+# R-squared: 0.392
+
+
+# NN4: 1 hidden layer with 20
+nn_fe4 <-neuralnet( inc_rank ~ . ,
+                    data = test_L01,
+                    hidden = 20,
+                    startweights = set.seed(123),
+                    act.fct = "logistic",
+                    stepmax = 10e6)
+cor(neuralnet::compute(nn_fe4, train_L01)$net.result, train_L01$inc_rank)^2
+# R-squared: 0.387
+
+
+
+
+# Training dataset
+predict  <- neuralnet::compute(nn_fe1, test_L01)
+cor(predict$net.result, test_L01$inc_rank)^2
+
+
+
+# Testing dataset
+predict  <- neuralnet::compute(nn_fe2, nn_test_L01_fe )
+imp_res[2,5] <- cor(predict$net.result, nn_test_L01_fe$log_earnings)^2
+
+
+
+```
+
+
