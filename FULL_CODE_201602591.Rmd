@@ -1,7 +1,7 @@
 ---
 title: "FULL CODE"
 output: word_document
-
+student number: 201602591
 ---
 ```{r setup, include=FALSE}
 
